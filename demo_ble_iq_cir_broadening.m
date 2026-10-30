@@ -1,49 +1,60 @@
 function result = demo_ble_iq_cir_broadening()
-%DEMO_BLE_IQ_CIR_BROADENING 对比理想与异常频域 IQ，并绘制 IFFT CIR。
+%DEMO_BLE_IQ_CIR_BROADENING Compare ideal and impaired frequency-domain IQ.
 %
-% 使用方法：
+% Usage:
 %   result = demo_ble_iq_cir_broadening;
 %
-% 只使用基础 MATLAB，无需 Signal Processing / Bluetooth Toolbox。
-% 建议使用 MATLAB R2020a 或更新版本，以便直接读取 UTF-8 中文注释。
+% Uses base MATLAB only; Signal Processing and Bluetooth Toolboxes are not
+% required. MATLAB R2020a or later is recommended.
 %
-% 生成 5 张图：
-%   01 两端幅度下降；02 二次相位误差；03 未分辨近邻多径；
-%   04 边缘缺点、Hann/Hamming、中间缺点、线性相位、2*pi 折返等对照；
-%   05 相邻频点相位差为开口向下二次函数（即群时延呈二次变化）。
-% 同时保存 PNG、FIG、IQ/CIR MAT 数据和宽度指标 CSV。
+% Generates six figures:
+%   01 edge amplitude attenuation; 02 quadratic phase error;
+%   03 unresolved close multipath; 04 control cases;
+%   05 quadratic adjacent-tone phase difference;
+%   06 two adjacent paths merged into one broadened peak.
+% Also saves PNG, FIG, IQ/CIR MAT data, and a CSV of width metrics.
 %
-% 物理约定：
-%   1) 每个 IQ 对应一个频点，按频率递增排列，不是单频时域 ADC 样本。
-%   2) 默认演示双程合成 IQ：相位=-4*pi*f*d/c，距离=c*tau/2。
-%   3) 80 个 1 MHz 等间隔频点是合成示例，不是标准 CS 有效信道表。
-%      首末频点跨度为 79 MHz；DFT 孔径尺度 B=N*df=80 MHz。
-%   4) 所有案例共用同一频率网格和 NFFT；缺失点在原网格上置零。
-%   5) 不额外加窗，只有明确标为 Hann/Hamming 的案例使用对应权重。
-%   6) 各 CIR 按自身峰值归一化，方便比较形状；原始峰高另存到指标。
-%   7) 宽度为功率半高（-3.0103 dB）宽度，即幅度峰值的 1/sqrt(2)。
-%      补零只增加曲线采样密度，不增加物理分辨率。
-%   8) 多径例直接构造最终 IQ 中的两条等效时延分量，未模拟从单程
-%      两径 H(f) 到双方 PCT 乘积 H(f)^2 所产生的全部交叉项。
+% Conventions:
+%   1) Each IQ value belongs to one frequency tone in ascending order; the
+%      vector is not a time-domain ADC record at one carrier.
+%   2) The default is a round-trip synthetic IQ model:
+%      phase=-4*pi*f*d/c and distance=c*tau/2.
+%   3) The 80 uniformly spaced 1 MHz tones are a synthetic example, not a
+%      Bluetooth CS channel map. Endpoint span is 79 MHz; DFT aperture scale
+%      is B=N*df=80 MHz.
+%   4) All cases share one frequency grid and NFFT. Missing tones are set to
+%      zero at their original grid locations.
+%   5) No extra window is applied except in the explicit Hann/Hamming cases.
+%   6) Each CIR is normalized by its own peak for shape comparison. Absolute
+%      peak loss is stored separately in the metrics.
+%   7) Width means power FWHM (-3.0103 dB), corresponding to magnitude
+%      threshold 1/sqrt(2). Zero padding improves sampling, not resolution.
+%   8) Multipath is formed directly as equivalent delayed components in the
+%      final IQ. Cross terms from a two-way PCT product H(f)^2 are omitted.
 
-%% 可修改参数
+%% User-adjustable parameters
 cfg.numTones = 80;
 cfg.dfHz = 1e6;
 cfg.fcHz = 2.44e9;
 cfg.nfft = 16384;
 cfg.c = 299792458;
-cfg.roundTrip = true;          % true: 双程 IQ；false: 单程信道 IQ
-cfg.distanceM = 8;             % 理想单径及多径中最早路径的距离
+cfg.roundTrip = true;          % true: round-trip IQ; false: one-way IQ
+cfg.distanceM = 8;             % ideal path and earliest multipath distance
 cfg.commonPhaseRad = 0.4;
-cfg.gaussianSigmaFraction = 0.23;  % 高斯幅度包络 sigma/B
-cfg.phaseQuadraticRad = 2.2;    % 频带边缘二次相位误差约为该值
-% 以下参数描述“相邻频点残余相位差”的二次曲率，而不是残余相位本身。
-% 构造 deltaEpsilon(k)=常数-C*x(k)^2，x 为相邻频点中点的归一化频率。
-% 因而中心与边缘的相位差之差约为 C rad，C>0 时抛物线开口向下。
-% 代码会去掉 deltaEpsilon 的离散均值，只移除一个无关的平均时延，
-% 不改变其二次曲率。0.40 rad 用于清楚演示；实测时请替换为拟合值。
+cfg.gaussianSigmaFraction = 0.23;  % Gaussian amplitude sigma/B
+cfg.phaseQuadraticRad = 2.2;    % approximate quadratic phase at band edges
+% This parameter controls the quadratic curvature of the adjacent-tone
+% residual phase difference, not the residual phase itself. The model is
+% deltaEpsilon(k)=constant-C*x(k)^2, where x is normalized midpoint
+% frequency. C>0 gives a downward-opening parabola whose center-to-edge
+% difference is about C rad. Removing its discrete mean removes only an
+% irrelevant average delay, not the quadratic curvature. Replace the 0.40
+% rad demonstration value with the value fitted to measured data.
 cfg.adjacentPhaseDiffCurvatureRad = 0.40;
-cfg.pathSeparationOverResolution = 0.70;  % 两径时延差/(1/B)
+cfg.pathSeparationOverResolution = 0.70;  % path delay spacing divided by 1/B
+cfg.mergedPathSeparationOverResolution = 0.90;
+cfg.mergedPath2RelativeAmplitude = 1.00;
+cfg.mergedPath2RelativePhaseRad = 0.00;
 cfg.linearPhaseExtraDistanceM = 1.2;
 cfg.edgeMissingPerSide = 16;
 cfg.centerMissingCount = 10;
@@ -57,15 +68,17 @@ cfg.outputDir = fullfile(fileparts(mfilename('fullpath')), ...
 cfg.fontName = chooseFont();
 
 assert(cfg.numTones >= 8 && mod(cfg.numTones, 2) == 0, ...
-    'numTones 必须为至少为 8 的偶数。');
+    'numTones must be an even integer of at least 8.');
 assert(cfg.nfft >= 32*cfg.numTones && mod(cfg.nfft, 2) == 0, ...
-    '为稳定插值计算主峰宽度，nfft 请使用不小于 32*numTones 的偶数。');
+    'nfft must be even and at least 32*numTones for stable interpolation.');
 assert(cfg.edgeMissingPerSide >= 0 && ...
-    2*cfg.edgeMissingPerSide < cfg.numTones, '边缘缺点数量不合法。');
+    2*cfg.edgeMissingPerSide < cfg.numTones, 'Invalid edgeMissingPerSide.');
 assert(cfg.centerMissingCount >= 1 && ...
-    cfg.centerMissingCount < cfg.numTones, '中间缺点数量不合法。');
+    cfg.centerMissingCount < cfg.numTones, 'Invalid centerMissingCount.');
+assert(cfg.mergedPath2RelativeAmplitude >= 0, ...
+    'mergedPath2RelativeAmplitude must be nonnegative.');
 
-%% 频率网格与理想 IQ
+%% Frequency grid and ideal IQ
 N = cfg.numTones;
 k = (0:N-1).';
 fOffsetHz = (k - (N-1)/2)*cfg.dfHz;
@@ -76,17 +89,18 @@ tau0 = propagationFactor*cfg.distanceM/cfg.c;
 phaseIdeal = cfg.commonPhaseRad - 2*pi*fOffsetHz*tau0;
 iqIdeal = exp(1j*phaseIdeal);
 
-% 用相对中心频率建模；载频带来的常相位已吸收到各路径复增益中。
-% 因此也能明确指定两条路径在中心频率处同相。
+% Use center-relative frequency. The carrier-dependent constant phase is
+% absorbed into each complex path gain, allowing paths to be explicitly in
+% phase at the center frequency.
 cases = struct('id', {}, 'label', {}, 'note', {}, 'iq', {}, ...
     'truePathDistanceM', {}, 'metrics', {}, 'cir', {});
-cases(end+1) = makeCase('ideal', '理想单径', ...
-    '平坦幅度 + 线性相位', iqIdeal, cfg.distanceM);
+cases(end+1) = makeCase('ideal', 'Ideal single path', ...
+    'Flat magnitude plus linear phase', iqIdeal, cfg.distanceM);
 
-%% 1) 幅度包络 / 有效频带变化
+%% 1) Amplitude envelope and effective bandwidth
 ampGaussian = exp(-0.5*(fOffsetHz/(cfg.gaussianSigmaFraction*B)).^2);
-cases(end+1) = makeCase('edge_gaussian', '两端幅度下降', ...
-    '频点不减少，但两端权重降低，有效带宽缩小', ...
+cases(end+1) = makeCase('edge_gaussian', 'Edge amplitude attenuation', ...
+    'All tones remain, but lower edge weights reduce effective bandwidth', ...
     iqIdeal.*ampGaussian, cfg.distanceM);
 
 edgeMask = ones(N, 1);
@@ -95,27 +109,28 @@ if m > 0
     edgeMask(1:m) = 0;
     edgeMask(N-m+1:N) = 0;
 end
-cases(end+1) = makeCase('edge_missing', '边缘频点缺失', ...
-    '两端频点在原始频率网格上置零，保留中间连续频带', ...
+cases(end+1) = makeCase('edge_missing', 'Missing edge tones', ...
+    'Edge tones are zeroed on the original grid, retaining the center band', ...
     iqIdeal.*edgeMask, cfg.distanceM);
 
-% 显式实现对称窗，避免依赖 hann()/hamming() 所在工具箱。
+% Implement symmetric windows explicitly to avoid toolbox dependencies.
 winHann = 0.5 - 0.5*cos(2*pi*k/(N-1));
 winHamming = 0.54 - 0.46*cos(2*pi*k/(N-1));
-cases(end+1) = makeCase('hann_weight', '频域 Hann 加权', ...
-    '旁瓣受抑制，同时主瓣变宽', iqIdeal.*winHann, cfg.distanceM);
-cases(end+1) = makeCase('hamming_weight', '频域 Hamming 加权', ...
-    '旁瓣受抑制，同时主瓣变宽', iqIdeal.*winHamming, cfg.distanceM);
+cases(end+1) = makeCase('hann_weight', 'Frequency-domain Hann weighting', ...
+    'Lower sidelobes with a wider main lobe', iqIdeal.*winHann, cfg.distanceM);
+cases(end+1) = makeCase('hamming_weight', 'Frequency-domain Hamming weighting', ...
+    'Lower sidelobes with a wider main lobe', iqIdeal.*winHamming, cfg.distanceM);
 
-%% 2) 非线性相位与线性相位对照
+%% 2) Nonlinear phase and linear-phase control
 phaseError = cfg.phaseQuadraticRad*(2*fOffsetHz/B).^2;
-cases(end+1) = makeCase('quadratic_phase', '二次相位误差', ...
-    '幅度完全不变；相位斜率随频率变化，能量不能聚焦到同一时延', ...
+cases(end+1) = makeCase('quadratic_phase', 'Quadratic phase error', ...
+    'Magnitude is unchanged; varying phase slope prevents common-delay focus', ...
     iqIdeal.*exp(1j*phaseError), cfg.distanceM);
 
-% 用户关注的新模型：相邻频点的残余相位差是开口向下二次函数。
-% deltaPhaseAdjacent(k)=epsilon(k+1)-epsilon(k)，所以对它累加后，
-% epsilon(k) 约为三次函数。离散群时延增量为
+% The adjacent-tone residual phase difference is a downward-opening
+% quadratic. Since deltaPhaseAdjacent(k)=epsilon(k+1)-epsilon(k), its
+% cumulative epsilon(k) is approximately cubic. The discrete group-delay
+% increment is
 % deltaTau_g(k)=-deltaPhaseAdjacent(k)/(2*pi*df)。
 fAdjacentMidHz = 0.5*(fOffsetHz(1:end-1)+fOffsetHz(2:end));
 xAdjacent = fAdjacentMidHz/max(abs(fAdjacentMidHz));
@@ -123,47 +138,71 @@ deltaPhaseAdjacent = -cfg.adjacentPhaseDiffCurvatureRad*xAdjacent.^2;
 deltaPhaseAdjacent = deltaPhaseAdjacent-mean(deltaPhaseAdjacent);
 phaseErrorFromAdjacent = [0; cumsum(deltaPhaseAdjacent)];
 cases(end+1) = makeCase('quadratic_adjacent_phase_diff', ...
-    '相邻相位差为二次函数', ...
-    ['相邻频点残余相位差开口向下；等价于群时延呈二次变化，', ...
-    '累积相位误差约为三次函数'], ...
+    'Quadratic adjacent-tone phase difference', ...
+    ['Downward-opening adjacent-tone residual phase difference; ', ...
+    'quadratic group delay and approximately cubic cumulative phase'], ...
     iqIdeal.*exp(1j*phaseErrorFromAdjacent), cfg.distanceM);
 
 deltaTau = propagationFactor*cfg.linearPhaseExtraDistanceM/cfg.c;
-cases(end+1) = makeCase('linear_phase', '纯线性相位变化', ...
-    '对照：峰位移动，主峰宽度基本不变', ...
+cases(end+1) = makeCase('linear_phase', 'Pure linear phase change', ...
+    'Control: the peak moves while its width remains nearly unchanged', ...
     iqIdeal.*exp(-1j*2*pi*fOffsetHz*deltaTau), ...
     cfg.distanceM + cfg.linearPhaseExtraDistanceM);
 
-%% 3) 两条未分辨近邻路径
+%% 3) Two unresolved nearby paths
 pathDeltaTau = cfg.pathSeparationOverResolution/B;
 tau1 = tau0;
 tau2 = tau0 + pathDeltaTau;
-% 两条路径复增益均为 0.5，在中心频率同相。
-% 最早路径仍在 distanceM；合成峰可能移动，也可能展宽。
+% Both path gains are 0.5 and in phase at center frequency. The earliest
+% path remains at distanceM; the combined peak may move and broaden.
 iqMultipath = exp(1j*cfg.commonPhaseRad)*( ...
     0.5*exp(-1j*2*pi*fOffsetHz*tau1) + ...
     0.5*exp(-1j*2*pi*fOffsetHz*tau2));
 twoDistances = cfg.c*[tau1, tau2]/propagationFactor;
-cases(end+1) = makeCase('close_multipath', '未分辨近邻多径', ...
-    sprintf('中心频率同相的等幅两径；时延差 %.2f ns = %.2f/B', ...
+cases(end+1) = makeCase('close_multipath', 'Unresolved nearby multipath', ...
+    sprintf('Equal paths in phase at band center; spacing %.2f ns = %.2f/B', ...
     pathDeltaTau*1e9, cfg.pathSeparationOverResolution), ...
     iqMultipath, twoDistances);
 
-%% 对照：中间缺点和正常相位折返
+% A second, explicit merging example. Each component alone produces the
+% normal single-path response. Their separation is below 1/B, so the sum
+% has one unresolved maximum with a wider -3 dB main lobe.
+mergedDeltaTau = cfg.mergedPathSeparationOverResolution/B;
+mergedTau1 = tau0;
+mergedTau2 = tau0 + mergedDeltaTau;
+mergedGain1 = 1/(1+cfg.mergedPath2RelativeAmplitude);
+mergedGain2 = cfg.mergedPath2RelativeAmplitude/ ...
+    (1+cfg.mergedPath2RelativeAmplitude)* ...
+    exp(1j*cfg.mergedPath2RelativePhaseRad);
+iqMergedPath1 = mergedGain1*exp(1j*cfg.commonPhaseRad).* ...
+    exp(-1j*2*pi*fOffsetHz*mergedTau1);
+iqMergedPath2 = mergedGain2*exp(1j*cfg.commonPhaseRad).* ...
+    exp(-1j*2*pi*fOffsetHz*mergedTau2);
+iqMergedPaths = iqMergedPath1 + iqMergedPath2;
+mergedDistances = cfg.c*[mergedTau1, mergedTau2]/propagationFactor;
+cases(end+1) = makeCase('merged_adjacent_paths', ...
+    'Two adjacent paths merged into one peak', ...
+    sprintf(['Two paths separated by %.2f/B, amplitude ratio %.2f, and ', ...
+    'center-frequency phase %.2f rad combine into one broadened peak'], ...
+    cfg.mergedPathSeparationOverResolution, ...
+    cfg.mergedPath2RelativeAmplitude, cfg.mergedPath2RelativePhaseRad), ...
+    iqMergedPaths, mergedDistances);
+
+%% Controls: center-notch tones and normal phase wrapping
 centerMask = ones(N, 1);
 firstMissing = floor((N-cfg.centerMissingCount)/2) + 1;
 centerMask(firstMissing:firstMissing+cfg.centerMissingCount-1) = 0;
-cases(end+1) = makeCase('center_missing', '中间频点缺失', ...
-    '对照：主瓣不一定变宽，但旁瓣/伪峰可能抬高', ...
+cases(end+1) = makeCase('center_missing', 'Missing center tones', ...
+    'Control: width need not increase, but sidelobes or false peaks may rise', ...
     iqIdeal.*centerMask, cfg.distanceM);
 
 phaseWrapped = angle(iqIdeal);
 iqFromWrappedPhase = abs(iqIdeal).*exp(1j*phaseWrapped);
-cases(end+1) = makeCase('phase_wrap', '正常相位折返重建', ...
-    '对照：相位在 +/-pi 折返，不改变复数 IQ，也不改变 CIR', ...
+cases(end+1) = makeCase('phase_wrap', 'Normal wrapped-phase reconstruction', ...
+    'Control: wrapping at +/-pi changes neither complex IQ nor the CIR', ...
     iqFromWrappedPhase, cfg.distanceM);
 
-%% 统一计算 CIR 与指标
+%% Compute all CIRs and metrics
 numCases = numel(cases);
 for n = 1:numCases
     cases(n).cir = computeCir(cases(n).iq, fOffsetHz, cfg);
@@ -205,20 +244,20 @@ metrics = table(id, label, peakDistanceM, width3dBNs, width3dBM, ...
     widthRatio, peakAmplitudeRatio, phaseResidualRmsRad, ...
     adjacentPhaseDiffPpRad, extraGroupDelayPpNs);
 
-%% 数学自检：防止坐标、变换符号、宽度定义混用
+%% Mathematical checks for axes, transform sign, and width definition
 assert(abs(base.metrics.peakDistanceM-cfg.distanceM) < ...
     2*cfg.c/(propagationFactor*cfg.nfft*cfg.dfHz), ...
-    '理想 IQ 的峰位与设定距离不符，请检查 IFFT 符号和距离轴。');
+    'Ideal-IQ peak does not match distanceM; check IFFT sign and distance axis.');
 expectedWidthNs = 0.885893/B*1e9;
 assert(abs(base.metrics.width3dBNs/expectedWidthNs-1) < 0.01, ...
-    '理想矩形频带的功率半高宽与 0.886/B 不符。');
+    'Ideal rectangular-band power FWHM does not match 0.886/B.');
 linearIndex = find(strcmp({cases.id}, 'linear_phase'), 1);
 assert(abs(cases(linearIndex).metrics.width3dBM/base.metrics.width3dBM-1) ...
-    < 0.005, '纯线性相位不应显著改变主峰宽度。');
+    < 0.005, 'Pure linear phase must not materially change peak width.');
 assert(max(abs(iqFromWrappedPhase-iqIdeal)) < 1e-12, ...
-    '正常相位折返重建后，复数 IQ 应保持一致。');
+    'Reconstruction from normally wrapped phase must preserve complex IQ.');
 
-%% 绘制三个主要案例，每个案例包含 6 幅对比图
+%% Draw the three primary six-panel comparisons
 if ~exist(cfg.outputDir, 'dir')
     mkdir(cfg.outputDir);
 end
@@ -237,8 +276,12 @@ adjacentIndex = find(strcmp({cases.id}, ...
 fig = drawAdjacentPhaseDifference(base, cases(adjacentIndex), ...
     fOffsetHz, phaseIdeal, cfg);
 saveFigure(fig, '05_quadratic_adjacent_phase_difference', cfg);
+mergedIndex = find(strcmp({cases.id}, 'merged_adjacent_paths'), 1);
+fig = drawMergedAdjacentPaths(base, cases(mergedIndex), ...
+    iqMergedPath1, iqMergedPath2, cfg);
+saveFigure(fig, '06_merged_adjacent_multipath', cfg);
 
-%% 保存：所有频域 IQ、复数 CIR、坐标和指标
+%% Save all frequency IQ, complex CIR, axes, and metrics
 result.cfg = cfg;
 result.frequencyHz = frequencyHz;
 result.fOffsetHz = fOffsetHz;
@@ -250,10 +293,10 @@ result.metrics = metrics;
 save(fullfile(cfg.outputDir, 'ble_iq_cir_examples.mat'), 'result');
 writetable(metrics, fullfile(cfg.outputDir, 'peak_width_metrics.csv'), ...
     'Encoding', 'UTF-8');
-fprintf('\n合成 IQ / CIR 对比完成。宽度采用功率半高宽。\n');
+fprintf('\nSynthetic IQ/CIR comparison complete. Width is power FWHM.\n');
 disp(metrics(:, {'label', 'peakDistanceM', 'width3dBNs', ...
     'width3dBM', 'widthRatio', 'peakAmplitudeRatio'}));
-fprintf('输出目录：%s\n', cfg.outputDir);
+fprintf('Output directory: %s\n', cfg.outputDir);
 end
 
 function item = makeCase(id, label, note, iq, trueDistances)
@@ -263,17 +306,19 @@ end
 
 function s = computeCir(iq, fOffsetHz, cfg)
 N = numel(iq);
-% 注意：按频率递增的 N 个 IQ 直接传给 ifft，末尾补零。
-% 不要先对这 N 个频点 ifftshift 再补零，会破坏连续频点排列。
+% Pass the N IQ values in ascending frequency order directly to IFFT and
+% append zero padding. Applying ifftshift before padding would break the
+% contiguous-tone ordering.
 s.tauS = (-cfg.nfft/2:cfg.nfft/2-1).'/(cfg.nfft*cfg.dfHz);
 s.distanceM = cfg.c*s.tauS/(1+double(cfg.roundTrip));
 hIndex = fftshift(ifft(iq(:), cfg.nfft))*cfg.nfft/N;
-% 补回频率起点的相位，得到 sum[IQ_k*exp(j*2*pi*fOffset_k*tau)]/N。
-% 该因子不影响 CIR 幅度或峰位，但让复数 CIR 也符合所定义的逆变换。
+% Restore the phase of the first frequency so the result equals
+% sum[IQ_k*exp(j*2*pi*fOffset_k*tau)]/N. This factor does not alter CIR
+% magnitude or peak position, but makes the complex CIR match the transform.
 s.complex = hIndex.*exp(1j*2*pi*fOffsetHz(1)*s.tauS);
 s.amplitude = abs(s.complex);
 peak = max(s.amplitude);
-assert(peak > 0, '输入 IQ 不能全部为零。');
+assert(peak > 0, 'Input IQ cannot be identically zero.');
 s.normalizedAmplitude = s.amplitude/peak;
 s.db = 20*log10(max(s.normalizedAmplitude, 10^(cfg.dbFloor/20)));
 end
@@ -282,7 +327,8 @@ function mt = measurePeak(s, phaseResidual)
 y = s.normalizedAmplitude;
 [~, p] = max(y);
 peakDistance = s.distanceM(p);
-% 三点抛物线插值仅用于细化峰位；宽度直接用阈值交点插值。
+% Three-point parabolic interpolation refines only the peak location. Width
+% is obtained directly by interpolation at the threshold crossings.
 if p > 1 && p < numel(y)
     den = y(p-1)-2*y(p)+y(p+1);
     if abs(den) > eps
@@ -299,13 +345,14 @@ end
 while right < numel(y) && y(right+1) >= threshold
     right = right+1;
 end
-% 只测全局主峰所在的连续主瓣，避免把远端旁瓣也计入宽度。
+% Measure only the contiguous lobe containing the global maximum, so distant
+% sidelobes are not included in the width.
 if left == 1 || right == numel(y)
     leftTau = NaN;
     rightTau = NaN;
     leftDistance = NaN;
     rightDistance = NaN;
-    warning('主峰跨越时延周期边界，未计算该峰的宽度。');
+    warning('The main peak crosses the delay-period boundary; width is NaN.');
 else
     leftTau = crossing(s.tauS(left-1), s.tauS(left), ...
         y(left-1), y(left), threshold);
@@ -332,7 +379,7 @@ end
 
 function [phaseUnwrapped, residual] = phaseDiagnostics( ...
     iq, iqIdeal, phaseIdeal, fOffsetHz, cfg)
-% 零幅度点没有可解释相位，使用 NaN 留空。
+% Phase is undefined for zero-magnitude tones; leave those entries as NaN.
 valid = abs(iq) > cfg.phaseValidFraction*max(abs(iq));
 phaseUnwrapped = NaN(size(iq));
 residual = NaN(size(iq));
@@ -340,8 +387,9 @@ if nnz(valid) < 2
     return;
 end
 
-% 这是已知参考的合成实验：先移除理想相位再展开残差，避免缺口使
-% 原始大斜率相位 unwrap 发生分支错误。实测数据需按信噪比稳健展开。
+% This synthetic test has a known reference. Remove ideal phase before
+% unwrapping the residual so gaps cannot cause branch errors on the large
+% raw phase slope. Measured data require SNR-aware robust unwrapping.
 delta = unwrap(angle(iq(valid).*conj(iqIdeal(valid))));
 phaseUnwrapped(valid) = phaseIdeal(valid) + delta;
 fMHz = fOffsetHz/1e6;
@@ -351,8 +399,8 @@ end
 
 function [fMidHz, deltaResidual, extraGroupDelayS] = ...
     adjacentPhaseDiagnostics(iq, iqIdeal, fOffsetHz, cfg)
-% 相邻频点残余相位差与由其估计的额外群时延。
-% 对等间隔频点：tau_g(f_{k+1/2}) ~= -Delta phi_k/(2*pi*Delta f)。
+% Adjacent-tone residual phase difference and inferred extra group delay.
+% For uniform tones: tau_g(f_{k+1/2}) ~= -Delta phi_k/(2*pi*Delta f).
 ratio = iq(:).*conj(iqIdeal(:));
 valid = abs(iq(:)) > cfg.phaseValidFraction*max(abs(iq(:)));
 fMidHz = 0.5*(fOffsetHz(1:end-1)+fOffsetHz(2:end));
@@ -362,9 +410,9 @@ if nnz(valid) < 2
     extraGroupDelayS = deltaResidual;
     return;
 end
-% 直接计算相邻复比值的相角，避免幅度缺口跨段 unwrap 污染后续频点。
-% 这要求真实相邻残余相位差落在 (-pi, pi]；BLE 频点间隔下通常应先
-% 去除已知粗时延，使该条件成立。
+% Compute the angle of adjacent complex ratios directly, so a magnitude gap
+% cannot corrupt later tones through cross-gap unwrapping. The true adjacent
+% residual difference must lie in (-pi,pi]. Remove coarse delay first.
 allDelta = angle(ratio(2:end).*conj(ratio(1:end-1)));
 deltaResidual(pairValid) = allDelta(pairValid);
 extraGroupDelayS = -deltaResidual/(2*pi*cfg.dfHz);
@@ -380,9 +428,9 @@ end
 end
 
 function fig = drawMainComparison(base, bad, fOffsetHz, phaseIdeal, cfg)
-fig = newFigure(['理想 vs ', bad.label], cfg, [80, 60, 1460, 930]);
+fig = newFigure(['Ideal vs ', bad.label], cfg, [80, 60, 1460, 930]);
 annotation(fig, 'textbox', [0.02, 0.955, 0.96, 0.035], ...
-    'String', ['理想 IQ vs ', bad.label, '：', bad.note], ...
+    'String', ['Ideal IQ vs ', bad.label, ': ', bad.note], ...
     'EdgeColor', 'none', 'FontWeight', 'bold', 'FontSize', 14, ...
     'FontName', cfg.fontName, 'Interpreter', 'none');
 fMHz = fOffsetHz/1e6;
@@ -399,32 +447,32 @@ hold on;
 plot(fMHz, imag(base.iq), ':', 'Color', [0.10, 0.58, 0.47], 'LineWidth', 1.4);
 plot(fMHz, real(bad.iq), '-', 'Color', [0.85, 0.27, 0.10], 'LineWidth', 1.5);
 plot(fMHz, imag(bad.iq), '-.', 'Color', [0.60, 0.28, 0.68], 'LineWidth', 1.5);
-title('频域 IQ 分量（统一幅度尺度）');
-xlabel('相对中心频率 / MHz'); ylabel('I、Q'); grid on;
-legend({'理想 I', '理想 Q', '异常 I', '异常 Q'}, 'Location', 'best');
+title('Frequency-domain IQ components on a common scale');
+xlabel('Frequency offset / MHz'); ylabel('I and Q'); grid on;
+legend({'Ideal I', 'Ideal Q', 'Impaired I', 'Impaired Q'}, 'Location', 'best');
 
 subplot(3, 2, 2);
 plotPair(fMHz, abs(base.iq), abs(bad.iq), idealColor, badColor);
-title('频域 IQ 幅度'); xlabel('相对中心频率 / MHz'); ylabel('|IQ|');
+title('Frequency-domain IQ magnitude'); xlabel('Frequency offset / MHz'); ylabel('|IQ|');
 ylim([0, max([abs(base.iq); abs(bad.iq)])*1.12]);
 
 subplot(3, 2, 3);
 plotPair(fMHz, phiBase, phiBad, idealColor, badColor);
-title('展开相位'); xlabel('相对中心频率 / MHz'); ylabel('相位 / rad');
+title('Unwrapped phase'); xlabel('Frequency offset / MHz'); ylabel('Phase / rad');
 
 subplot(3, 2, 4);
 plotPair(fMHz, resBase, resBad, idealColor, badColor);
-title('各自去除最佳线性相位后的残差');
-xlabel('相对中心频率 / MHz'); ylabel('残差 / rad');
+title('Residual after removing each best-fit linear phase');
+xlabel('Frequency offset / MHz'); ylabel('Residual / rad');
 if max(abs(resBad(isfinite(resBad)))) < 1e-9
     ylim([-0.2, 0.2]);
 end
 
 subplot(3, 2, 5);
 plotPair(base.cir.distanceM, base.cir.db, bad.cir.db, idealColor, badColor);
-title('IFFT CIR：归一化幅度 / dB'); xlabel('双程等效距离 / m');
-if ~cfg.roundTrip, xlabel('单程距离 / m'); end
-ylabel('20 log10(|CIR| / 自身峰值)');
+title('IFFT CIR: normalized magnitude / dB'); xlabel('Round-trip equivalent distance / m');
+if ~cfg.roundTrip, xlabel('One-way distance / m'); end
+ylabel('20 log10(|CIR| / own peak)');
 xlim(cfg.plotDistanceM); ylim([cfg.dbFloor, 1]);
 markTruePaths(bad.truePathDistanceM, [cfg.dbFloor, 1]);
 
@@ -439,30 +487,33 @@ plot(near, [1, 1]/sqrt(2), ':', 'Color', [0.55, 0.55, 0.55], ...
 markWidth(base.metrics, idealColor);
 markWidth(bad.metrics, badColor);
 markTruePaths(bad.truePathDistanceM, [0, 1.08]);
-title(sprintf('功率半高宽：理想 %.3f m；异常 %.3f m', ...
+title(sprintf('Power FWHM: ideal %.3f m; impaired %.3f m', ...
     base.metrics.width3dBM, bad.metrics.width3dBM));
-xlabel('距离 / m'); ylabel('各自峰值归一化幅度');
+xlabel('Distance / m'); ylabel('Magnitude normalized by own peak');
 xlim(near); ylim([0, 1.08]);
 
 annotation(fig, 'textbox', [0.02, 0.003, 0.96, 0.032], ...
-    'String', sprintf(['合成示例 | %d 点 x %.1f MHz | 两曲线各自峰值归一化 | ', ...
-    '半高功率对应幅度 0.707 | 竖虚线标出本例真实路径 | 补零不提高物理分辨率'], ...
+    'String', sprintf(['Synthetic example | %d tones x %.1f MHz | Each curve ', ...
+    'normalized by its own peak | Half power = 0.707 magnitude | ', ...
+    'Vertical dotted lines are true paths | Zero padding does not improve resolution'], ...
     cfg.numTones, cfg.dfHz/1e6), 'EdgeColor', 'none', 'FontSize', 10, ...
     'FontName', cfg.fontName, 'Interpreter', 'none');
 end
 
 function fig = drawControls(cases, cfg)
-fig = newFigure('补充对照：不是所有 IQ 变化都会使主峰变宽', ...
+fig = newFigure('Controls: not every IQ change broadens the main peak', ...
     cfg, [100, 80, 1530, 880]);
 annotation(fig, 'textbox', [0.02, 0.955, 0.96, 0.035], ...
-    'String', '补充对照：比较缺点位置、窗函数、线性相位与正常相位折返', ...
+    'String', 'Controls: tone location, windows, linear phase, and normal phase wrapping', ...
     'EdgeColor', 'none', 'FontWeight', 'bold', 'FontSize', 14, ...
     'FontName', cfg.fontName, 'Interpreter', 'none');
 groups = {{'edge_missing'}, {'hann_weight', 'hamming_weight'}, ...
     {'center_missing'}, {'linear_phase'}, {'phase_wrap'}};
-titles = {'边缘缺点：连续有效频带变窄', 'Hann / Hamming：旁瓣降低、主瓣变宽', ...
-    '中间缺点：主瓣未必变宽，旁瓣抬高', '纯线性相位：只改变峰的位置', ...
-    '正常 +/-pi 折返：重建 IQ 后 CIR 重合'};
+titles = {'Missing edge tones: narrower contiguous effective band', ...
+    'Hann / Hamming: lower sidelobes and wider main lobe', ...
+    'Missing center tones: width need not increase; sidelobes rise', ...
+    'Pure linear phase: only the peak position changes', ...
+    'Normal +/-pi wrapping: reconstructed IQ gives the same CIR'};
 base = cases(1);
 colors = [0.85, 0.27, 0.10; 0.10, 0.50, 0.68; 0.10, 0.58, 0.40];
 for panel = 1:5
@@ -470,7 +521,7 @@ for panel = 1:5
     plot(base.cir.distanceM, base.cir.db, '--', ...
         'Color', [0.40, 0.45, 0.52], 'LineWidth', 1.5);
     hold on;
-    names = {sprintf('理想：%.3f m', base.metrics.width3dBM)};
+    names = {sprintf('Ideal: %.3f m', base.metrics.width3dBM)};
     for j = 1:numel(groups{panel})
         index = find(strcmp({cases.id}, groups{panel}{j}), 1);
         item = cases(index);
@@ -479,19 +530,20 @@ for panel = 1:5
         names{end+1} = sprintf('%s：%.3f m', ...
             item.label, item.metrics.width3dBM); %#ok<AGROW>
     end
-    title(titles{panel}); xlabel('距离 / m'); ylabel('归一化 CIR / dB');
+    title(titles{panel}); xlabel('Distance / m'); ylabel('Normalized CIR / dB');
     xlim([cfg.distanceM-5, cfg.distanceM+6]); ylim([cfg.dbFloor, 1]);
     grid on; legend(names, 'Location', 'southwest');
 end
 
-% 对齐峰位后比较形状，避免把“峰移”误看成“峰宽”。
+% Align peak positions before shape comparison so motion is not mistaken for
+% broadening.
 subplot(2, 3, 6);
 plot(base.cir.distanceM-base.metrics.peakDistanceM, ...
     base.cir.normalizedAmplitude, '--', ...
     'Color', [0.40, 0.45, 0.52], 'LineWidth', 1.5);
 hold on;
 mainIds = {'edge_gaussian', 'quadratic_phase', 'close_multipath'};
-names = {'理想单径'};
+names = {'Ideal single path'};
 for j = 1:numel(mainIds)
     index = find(strcmp({cases.id}, mainIds{j}), 1);
     item = cases(index);
@@ -499,25 +551,26 @@ for j = 1:numel(mainIds)
         item.cir.normalizedAmplitude, 'Color', colors(j, :), 'LineWidth', 1.5);
     names{end+1} = item.label; %#ok<AGROW>
 end
-title('主峰位置对齐后：直接比较三类展宽');
-xlabel('相对各自峰位的距离 / m'); ylabel('各自峰值归一化幅度');
+title('Peak-aligned comparison of three broadening mechanisms');
+xlabel('Distance relative to each peak / m'); ylabel('Normalized magnitude');
 xlim([-3.5, 3.5]); ylim([0, 1.08]); grid on;
 legend(names, 'Location', 'northeast');
 annotation(fig, 'textbox', [0.02, 0.003, 0.96, 0.032], ...
-    'String', ['图例数值为功率半高宽；缺失频点在原始网格上置零；', ...
-    '每条 CIR 按自身峰值归一化，实际峰高损失见 CSV。'], ...
+    'String', ['Legend values are power FWHM. Missing tones are zeroed on ', ...
+    'the original grid. Each CIR uses its own peak; absolute peak loss is in the CSV.'], ...
     'EdgeColor', 'none', 'FontSize', 10, 'FontName', cfg.fontName, ...
     'Interpreter', 'none');
 end
 
 function fig = drawAdjacentPhaseDifference(base, bad, ...
     fOffsetHz, phaseIdeal, cfg)
-% 专门展示 Delta phase 二次 -> 群时延二次 -> 累积相位约三次 -> CIR。
-fig = newFigure('相邻频点相位差二次变化与 CIR 展宽', ...
+% Show quadratic Delta phase -> quadratic group delay -> approximately cubic
+% cumulative phase -> CIR.
+fig = newFigure('Quadratic adjacent-tone phase difference and CIR broadening', ...
     cfg, [90, 55, 1460, 930]);
 annotation(fig, 'textbox', [0.02, 0.955, 0.96, 0.035], ...
-    'String', ['相邻频点残余相位差为开口向下二次函数：', ...
-    '对应额外群时延随频率呈二次变化；累积相位误差约为三次函数'], ...
+    'String', ['Downward-opening quadratic adjacent-tone residual phase ', ...
+    'difference: quadratic extra group delay and approximately cubic cumulative phase'], ...
     'EdgeColor', 'none', 'FontWeight', 'bold', 'FontSize', 14, ...
     'FontName', cfg.fontName, 'Interpreter', 'none');
 idealColor = [0.40, 0.45, 0.52];
@@ -534,30 +587,30 @@ fMHz = fOffsetHz/1e6;
 
 subplot(3, 2, 1);
 plotPair(fMidHz/1e6, deltaIdeal, deltaBad, idealColor, badColor);
-title('相邻频点残余相位差');
-xlabel('相邻频点中点 / MHz'); ylabel('Delta epsilon_k / rad');
+title('Adjacent-tone residual phase difference');
+xlabel('Adjacent-tone midpoint / MHz'); ylabel('Delta epsilon_k / rad');
 
 subplot(3, 2, 2);
 plotPair(fMidHz/1e6, delayIdealS*1e9, delayBadS*1e9, ...
     idealColor, badColor);
-title('由相邻相位差得到的额外群时延');
-xlabel('相邻频点中点 / MHz'); ylabel('Delta tau_g / ns');
+title('Extra group delay inferred from adjacent phase');
+xlabel('Adjacent-tone midpoint / MHz'); ylabel('Delta tau_g / ns');
 
 subplot(3, 2, 3);
 plotPair(fMHz, residualIdeal, residualBad, idealColor, badColor);
-title('去除最佳线性项后的累积相位残差');
-xlabel('相对中心频率 / MHz'); ylabel('相位残差 / rad');
+title('Cumulative phase residual after best linear fit');
+xlabel('Frequency offset / MHz'); ylabel('Phase residual / rad');
 
 subplot(3, 2, 4);
 plotPair(fMHz, abs(base.iq), abs(bad.iq), idealColor, badColor);
-title('IQ 幅度保持不变');
-xlabel('相对中心频率 / MHz'); ylabel('|IQ|'); ylim([0, 1.12]);
+title('IQ magnitude remains unchanged');
+xlabel('Frequency offset / MHz'); ylabel('|IQ|'); ylim([0, 1.12]);
 
 subplot(3, 2, 5);
 plotPair(base.cir.distanceM, base.cir.db, bad.cir.db, ...
     idealColor, badColor);
-title('IFFT CIR：归一化幅度 / dB'); xlabel('距离 / m');
-ylabel('20 log10(|CIR| / 自身峰值)');
+title('IFFT CIR: normalized magnitude / dB'); xlabel('Distance / m');
+ylabel('20 log10(|CIR| / own peak)');
 xlim([cfg.distanceM-7, cfg.distanceM+7]); ylim([cfg.dbFloor, 1]);
 
 subplot(3, 2, 6);
@@ -570,18 +623,106 @@ plot(bad.cir.distanceM-bad.metrics.peakDistanceM, ...
 plot([-4, 4], [1, 1]/sqrt(2), ':', 'Color', [0.55, 0.55, 0.55], ...
     'HandleVisibility', 'off');
 grid on; xlim([-4, 4]); ylim([0, 1.08]);
-title(sprintf('峰位对齐后的功率半高宽：%.3f m -> %.3f m', ...
+title(sprintf('Peak-aligned power FWHM: %.3f m -> %.3f m', ...
     base.metrics.width3dBM, bad.metrics.width3dBM));
-xlabel('相对各自峰位的距离 / m'); ylabel('归一化幅度');
-legend({'理想', '相邻相位差二次'}, 'Location', 'best');
+xlabel('Distance relative to each peak / m'); ylabel('Normalized magnitude');
+legend({'Ideal', 'Quadratic adjacent-phase difference'}, 'Location', 'best');
 
 annotation(fig, 'textbox', [0.02, 0.003, 0.96, 0.040], ...
-    'String', sprintf(['本例 Delta epsilon 峰峰值 %.3f rad，', ...
-    '对应额外群时延峰峰值 %.2f ns；宽度比 %.3f。', ...
-    '强畸变时可能出现肩峰或分裂，此时单个 -3 dB 宽度不再单调。'], ...
+    'String', sprintf(['Delta epsilon peak-to-peak %.3f rad; extra group-delay ', ...
+    'peak-to-peak %.2f ns; width ratio %.3f. Strong distortion may create ', ...
+    'shoulders or split peaks, making a single -3 dB width non-monotonic.'], ...
     bad.metrics.adjacentPhaseDiffPpRad, ...
     bad.metrics.extraGroupDelayPpNs, ...
     bad.metrics.width3dBM/base.metrics.width3dBM), ...
+    'EdgeColor', 'none', 'FontSize', 10, 'FontName', cfg.fontName, ...
+    'Interpreter', 'none');
+end
+
+function fig = drawMergedAdjacentPaths(base, merged, iqPath1, iqPath2, cfg)
+% Show why two nearby path responses are observed as one wider peak.
+cir1 = computeCir(iqPath1, ...
+    ((0:cfg.numTones-1).'-(cfg.numTones-1)/2)*cfg.dfHz, cfg);
+cir2 = computeCir(iqPath2, ...
+    ((0:cfg.numTones-1).'-(cfg.numTones-1)/2)*cfg.dfHz, cfg);
+fig = newFigure('Two adjacent paths merge into a broadened CIR peak', ...
+    cfg, [95, 60, 1460, 900]);
+annotation(fig, 'textbox', [0.02, 0.955, 0.96, 0.035], ...
+    'String', sprintf(['Two paths are separated by %.2f/B with amplitude ', ...
+    'ratio %.2f and center-frequency phase %.2f rad. They form one wider peak.'], ...
+    cfg.mergedPathSeparationOverResolution, ...
+    cfg.mergedPath2RelativeAmplitude, cfg.mergedPath2RelativePhaseRad), ...
+    'EdgeColor', 'none', 'FontWeight', 'bold', 'FontSize', 14, ...
+    'FontName', cfg.fontName, 'Interpreter', 'none');
+
+subplot(2, 2, 1);
+plot(cir1.distanceM, cir1.normalizedAmplitude, '--', ...
+    'Color', [0.10, 0.50, 0.75], 'LineWidth', 1.5); hold on;
+plot(cir2.distanceM, cir2.normalizedAmplitude, '--', ...
+    'Color', [0.20, 0.65, 0.40], 'LineWidth', 1.5);
+plot(merged.cir.distanceM, merged.cir.normalizedAmplitude, '-', ...
+    'Color', [0.85, 0.27, 0.10], 'LineWidth', 2.0);
+markTruePaths(merged.truePathDistanceM, [0, 1.08]);
+xlim([cfg.distanceM-3, max(merged.truePathDistanceM)+3]); ylim([0, 1.08]);
+grid on; title('Individual path responses and their coherent sum');
+xlabel('Distance / m'); ylabel('Normalized magnitude');
+legend({'Path 1 alone', 'Path 2 alone', 'Coherent two-path sum'}, ...
+    'Location', 'best');
+
+subplot(2, 2, 2);
+plot(base.cir.distanceM-base.metrics.peakDistanceM, ...
+    base.cir.normalizedAmplitude, '--', 'Color', [0.40, 0.45, 0.52], ...
+    'LineWidth', 1.6); hold on;
+plot(merged.cir.distanceM-merged.metrics.peakDistanceM, ...
+    merged.cir.normalizedAmplitude, '-', 'Color', [0.85, 0.27, 0.10], ...
+    'LineWidth', 1.9);
+plot([-4, 4], [1, 1]/sqrt(2), ':', 'Color', [0.55, 0.55, 0.55], ...
+    'HandleVisibility', 'off');
+shiftedBaseMetrics = base.metrics;
+shiftedBaseMetrics.leftCrossingM = base.metrics.leftCrossingM- ...
+    base.metrics.peakDistanceM;
+shiftedBaseMetrics.rightCrossingM = base.metrics.rightCrossingM- ...
+    base.metrics.peakDistanceM;
+markWidth(shiftedBaseMetrics, [0.40, 0.45, 0.52]);
+shiftedMetrics = merged.metrics;
+shiftedMetrics.leftCrossingM = merged.metrics.leftCrossingM- ...
+    merged.metrics.peakDistanceM;
+shiftedMetrics.rightCrossingM = merged.metrics.rightCrossingM- ...
+    merged.metrics.peakDistanceM;
+markWidth(shiftedMetrics, [0.85, 0.27, 0.10]);
+xlim([-4, 4]); ylim([0, 1.08]); grid on;
+title(sprintf('Peak-aligned -3 dB width: %.3f m -> %.3f m', ...
+    base.metrics.width3dBM, merged.metrics.width3dBM));
+xlabel('Distance relative to each peak / m'); ylabel('Normalized magnitude');
+legend({'Ideal single path', 'Merged adjacent paths'}, 'Location', 'best');
+
+subplot(2, 2, 3);
+plot(merged.cir.distanceM, merged.cir.db, '-', ...
+    'Color', [0.85, 0.27, 0.10], 'LineWidth', 1.7); hold on;
+markTruePaths(merged.truePathDistanceM, [cfg.dbFloor, 1]);
+xlim([cfg.distanceM-5, max(merged.truePathDistanceM)+5]);
+ylim([cfg.dbFloor, 1]); grid on;
+title('Merged CIR on a logarithmic scale');
+xlabel('Distance / m'); ylabel('Normalized CIR / dB');
+
+subplot(2, 2, 4);
+fMHz = ((0:cfg.numTones-1).'-(cfg.numTones-1)/2)*cfg.dfHz/1e6;
+plot(fMHz, abs(iqPath1), '--', ...
+    'Color', [0.10, 0.50, 0.75], 'LineWidth', 1.4); hold on;
+plot(fMHz, abs(iqPath2), '--', ...
+    'Color', [0.20, 0.65, 0.40], 'LineWidth', 1.4);
+plot(fMHz, abs(merged.iq), '-', ...
+    'Color', [0.85, 0.27, 0.10], 'LineWidth', 1.8);
+grid on; title('Frequency-domain magnitude interference');
+xlabel('Frequency offset / MHz'); ylabel('|IQ|');
+legend({'Path 1 component', 'Path 2 component', 'Two-path sum'}, ...
+    'Location', 'best');
+
+annotation(fig, 'textbox', [0.02, 0.003, 0.96, 0.038], ...
+    'String', sprintf(['Path spacing %.3f m; ideal width %.3f m; ', ...
+    'merged width %.3f m; width ratio %.3f.'], ...
+    diff(merged.truePathDistanceM), base.metrics.width3dBM, ...
+    merged.metrics.width3dBM, merged.metrics.width3dBM/base.metrics.width3dBM), ...
     'EdgeColor', 'none', 'FontSize', 10, 'FontName', cfg.fontName, ...
     'Interpreter', 'none');
 end
@@ -591,7 +732,7 @@ plot(x, yIdeal, '--', 'Color', idealColor, 'LineWidth', 1.6);
 hold on;
 plot(x, yBad, '-', 'Color', badColor, 'LineWidth', 1.7);
 grid on;
-legend({'理想', '本例'}, 'Location', 'best');
+legend({'Ideal', 'Current case'}, 'Location', 'best');
 end
 
 function markWidth(mt, color)
