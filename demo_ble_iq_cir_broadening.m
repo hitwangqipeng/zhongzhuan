@@ -7,9 +7,10 @@ function result = demo_ble_iq_cir_broadening()
 % 只使用基础 MATLAB，无需 Signal Processing / Bluetooth Toolbox。
 % 建议使用 MATLAB R2020a 或更新版本，以便直接读取 UTF-8 中文注释。
 %
-% 生成 4 张图：
+% 生成 5 张图：
 %   01 两端幅度下降；02 二次相位误差；03 未分辨近邻多径；
-%   04 边缘缺点、Hann/Hamming、中间缺点、线性相位、2*pi 折返等对照。
+%   04 边缘缺点、Hann/Hamming、中间缺点、线性相位、2*pi 折返等对照；
+%   05 相邻频点相位差为开口向下二次函数（即群时延呈二次变化）。
 % 同时保存 PNG、FIG、IQ/CIR MAT 数据和宽度指标 CSV。
 %
 % 物理约定：
@@ -36,6 +37,12 @@ cfg.distanceM = 8;             % 理想单径及多径中最早路径的距离
 cfg.commonPhaseRad = 0.4;
 cfg.gaussianSigmaFraction = 0.23;  % 高斯幅度包络 sigma/B
 cfg.phaseQuadraticRad = 2.2;    % 频带边缘二次相位误差约为该值
+% 以下参数描述“相邻频点残余相位差”的二次曲率，而不是残余相位本身。
+% 构造 deltaEpsilon(k)=常数-C*x(k)^2，x 为相邻频点中点的归一化频率。
+% 因而中心与边缘的相位差之差约为 C rad，C>0 时抛物线开口向下。
+% 代码会去掉 deltaEpsilon 的离散均值，只移除一个无关的平均时延，
+% 不改变其二次曲率。0.40 rad 用于清楚演示；实测时请替换为拟合值。
+cfg.adjacentPhaseDiffCurvatureRad = 0.40;
 cfg.pathSeparationOverResolution = 0.70;  % 两径时延差/(1/B)
 cfg.linearPhaseExtraDistanceM = 1.2;
 cfg.edgeMissingPerSide = 16;
@@ -106,6 +113,21 @@ cases(end+1) = makeCase('quadratic_phase', '二次相位误差', ...
     '幅度完全不变；相位斜率随频率变化，能量不能聚焦到同一时延', ...
     iqIdeal.*exp(1j*phaseError), cfg.distanceM);
 
+% 用户关注的新模型：相邻频点的残余相位差是开口向下二次函数。
+% deltaPhaseAdjacent(k)=epsilon(k+1)-epsilon(k)，所以对它累加后，
+% epsilon(k) 约为三次函数。离散群时延增量为
+% deltaTau_g(k)=-deltaPhaseAdjacent(k)/(2*pi*df)。
+fAdjacentMidHz = 0.5*(fOffsetHz(1:end-1)+fOffsetHz(2:end));
+xAdjacent = fAdjacentMidHz/max(abs(fAdjacentMidHz));
+deltaPhaseAdjacent = -cfg.adjacentPhaseDiffCurvatureRad*xAdjacent.^2;
+deltaPhaseAdjacent = deltaPhaseAdjacent-mean(deltaPhaseAdjacent);
+phaseErrorFromAdjacent = [0; cumsum(deltaPhaseAdjacent)];
+cases(end+1) = makeCase('quadratic_adjacent_phase_diff', ...
+    '相邻相位差为二次函数', ...
+    ['相邻频点残余相位差开口向下；等价于群时延呈二次变化，', ...
+    '累积相位误差约为三次函数'], ...
+    iqIdeal.*exp(1j*phaseErrorFromAdjacent), cfg.distanceM);
+
 deltaTau = propagationFactor*cfg.linearPhaseExtraDistanceM/cfg.c;
 cases(end+1) = makeCase('linear_phase', '纯线性相位变化', ...
     '对照：峰位移动，主峰宽度基本不变', ...
@@ -148,6 +170,12 @@ for n = 1:numCases
     [~, phaseResidual] = phaseDiagnostics( ...
         cases(n).iq, iqIdeal, phaseIdeal, fOffsetHz, cfg);
     cases(n).metrics = measurePeak(cases(n).cir, phaseResidual);
+    [~, adjacentResidual, extraGroupDelayS] = adjacentPhaseDiagnostics( ...
+        cases(n).iq, iqIdeal, fOffsetHz, cfg);
+    cases(n).metrics.adjacentPhaseDiffPpRad = ...
+        finitePeakToPeak(adjacentResidual);
+    cases(n).metrics.extraGroupDelayPpNs = ...
+        finitePeakToPeak(extraGroupDelayS)*1e9;
 end
 base = cases(1);
 id = cell(numCases, 1);
@@ -158,6 +186,8 @@ width3dBM = zeros(numCases, 1);
 widthRatio = zeros(numCases, 1);
 peakAmplitudeRatio = zeros(numCases, 1);
 phaseResidualRmsRad = zeros(numCases, 1);
+adjacentPhaseDiffPpRad = zeros(numCases, 1);
+extraGroupDelayPpNs = zeros(numCases, 1);
 for n = 1:numCases
     id{n} = cases(n).id;
     label{n} = cases(n).label;
@@ -168,9 +198,12 @@ for n = 1:numCases
     widthRatio(n) = mt.width3dBM/base.metrics.width3dBM;
     peakAmplitudeRatio(n) = mt.peakAmplitude/base.metrics.peakAmplitude;
     phaseResidualRmsRad(n) = mt.phaseResidualRmsRad;
+    adjacentPhaseDiffPpRad(n) = mt.adjacentPhaseDiffPpRad;
+    extraGroupDelayPpNs(n) = mt.extraGroupDelayPpNs;
 end
 metrics = table(id, label, peakDistanceM, width3dBNs, width3dBM, ...
-    widthRatio, peakAmplitudeRatio, phaseResidualRmsRad);
+    widthRatio, peakAmplitudeRatio, phaseResidualRmsRad, ...
+    adjacentPhaseDiffPpRad, extraGroupDelayPpNs);
 
 %% 数学自检：防止坐标、变换符号、宽度定义混用
 assert(abs(base.metrics.peakDistanceM-cfg.distanceM) < ...
@@ -199,6 +232,11 @@ for n = 1:numel(mainIds)
 end
 fig = drawControls(cases, cfg);
 saveFigure(fig, '04_controls', cfg);
+adjacentIndex = find(strcmp({cases.id}, ...
+    'quadratic_adjacent_phase_diff'), 1);
+fig = drawAdjacentPhaseDifference(base, cases(adjacentIndex), ...
+    fOffsetHz, phaseIdeal, cfg);
+saveFigure(fig, '05_quadratic_adjacent_phase_difference', cfg);
 
 %% 保存：所有频域 IQ、复数 CIR、坐标和指标
 result.cfg = cfg;
@@ -301,6 +339,7 @@ residual = NaN(size(iq));
 if nnz(valid) < 2
     return;
 end
+
 % 这是已知参考的合成实验：先移除理想相位再展开残差，避免缺口使
 % 原始大斜率相位 unwrap 发生分支错误。实测数据需按信噪比稳健展开。
 delta = unwrap(angle(iq(valid).*conj(iqIdeal(valid))));
@@ -308,6 +347,36 @@ phaseUnwrapped(valid) = phaseIdeal(valid) + delta;
 fMHz = fOffsetHz/1e6;
 fitLine = polyfit(fMHz(valid), delta, 1);
 residual(valid) = delta-polyval(fitLine, fMHz(valid));
+end
+
+function [fMidHz, deltaResidual, extraGroupDelayS] = ...
+    adjacentPhaseDiagnostics(iq, iqIdeal, fOffsetHz, cfg)
+% 相邻频点残余相位差与由其估计的额外群时延。
+% 对等间隔频点：tau_g(f_{k+1/2}) ~= -Delta phi_k/(2*pi*Delta f)。
+ratio = iq(:).*conj(iqIdeal(:));
+valid = abs(iq(:)) > cfg.phaseValidFraction*max(abs(iq(:)));
+fMidHz = 0.5*(fOffsetHz(1:end-1)+fOffsetHz(2:end));
+deltaResidual = NaN(numel(iq)-1, 1);
+pairValid = valid(1:end-1) & valid(2:end);
+if nnz(valid) < 2
+    extraGroupDelayS = deltaResidual;
+    return;
+end
+% 直接计算相邻复比值的相角，避免幅度缺口跨段 unwrap 污染后续频点。
+% 这要求真实相邻残余相位差落在 (-pi, pi]；BLE 频点间隔下通常应先
+% 去除已知粗时延，使该条件成立。
+allDelta = angle(ratio(2:end).*conj(ratio(1:end-1)));
+deltaResidual(pairValid) = allDelta(pairValid);
+extraGroupDelayS = -deltaResidual/(2*pi*cfg.dfHz);
+end
+
+function value = finitePeakToPeak(x)
+x = x(isfinite(x));
+if isempty(x)
+    value = NaN;
+else
+    value = max(x)-min(x);
+end
 end
 
 function fig = drawMainComparison(base, bad, fOffsetHz, phaseIdeal, cfg)
@@ -437,6 +506,82 @@ legend(names, 'Location', 'northeast');
 annotation(fig, 'textbox', [0.02, 0.003, 0.96, 0.032], ...
     'String', ['图例数值为功率半高宽；缺失频点在原始网格上置零；', ...
     '每条 CIR 按自身峰值归一化，实际峰高损失见 CSV。'], ...
+    'EdgeColor', 'none', 'FontSize', 10, 'FontName', cfg.fontName, ...
+    'Interpreter', 'none');
+end
+
+function fig = drawAdjacentPhaseDifference(base, bad, ...
+    fOffsetHz, phaseIdeal, cfg)
+% 专门展示 Delta phase 二次 -> 群时延二次 -> 累积相位约三次 -> CIR。
+fig = newFigure('相邻频点相位差二次变化与 CIR 展宽', ...
+    cfg, [90, 55, 1460, 930]);
+annotation(fig, 'textbox', [0.02, 0.955, 0.96, 0.035], ...
+    'String', ['相邻频点残余相位差为开口向下二次函数：', ...
+    '对应额外群时延随频率呈二次变化；累积相位误差约为三次函数'], ...
+    'EdgeColor', 'none', 'FontWeight', 'bold', 'FontSize', 14, ...
+    'FontName', cfg.fontName, 'Interpreter', 'none');
+idealColor = [0.40, 0.45, 0.52];
+badColor = [0.85, 0.27, 0.10];
+fMHz = fOffsetHz/1e6;
+[~, residualIdeal] = phaseDiagnostics( ...
+    base.iq, base.iq, phaseIdeal, fOffsetHz, cfg);
+[~, residualBad] = phaseDiagnostics( ...
+    bad.iq, base.iq, phaseIdeal, fOffsetHz, cfg);
+[fMidHz, deltaIdeal, delayIdealS] = adjacentPhaseDiagnostics( ...
+    base.iq, base.iq, fOffsetHz, cfg);
+[~, deltaBad, delayBadS] = adjacentPhaseDiagnostics( ...
+    bad.iq, base.iq, fOffsetHz, cfg);
+
+subplot(3, 2, 1);
+plotPair(fMidHz/1e6, deltaIdeal, deltaBad, idealColor, badColor);
+title('相邻频点残余相位差');
+xlabel('相邻频点中点 / MHz'); ylabel('Delta epsilon_k / rad');
+
+subplot(3, 2, 2);
+plotPair(fMidHz/1e6, delayIdealS*1e9, delayBadS*1e9, ...
+    idealColor, badColor);
+title('由相邻相位差得到的额外群时延');
+xlabel('相邻频点中点 / MHz'); ylabel('Delta tau_g / ns');
+
+subplot(3, 2, 3);
+plotPair(fMHz, residualIdeal, residualBad, idealColor, badColor);
+title('去除最佳线性项后的累积相位残差');
+xlabel('相对中心频率 / MHz'); ylabel('相位残差 / rad');
+
+subplot(3, 2, 4);
+plotPair(fMHz, abs(base.iq), abs(bad.iq), idealColor, badColor);
+title('IQ 幅度保持不变');
+xlabel('相对中心频率 / MHz'); ylabel('|IQ|'); ylim([0, 1.12]);
+
+subplot(3, 2, 5);
+plotPair(base.cir.distanceM, base.cir.db, bad.cir.db, ...
+    idealColor, badColor);
+title('IFFT CIR：归一化幅度 / dB'); xlabel('距离 / m');
+ylabel('20 log10(|CIR| / 自身峰值)');
+xlim([cfg.distanceM-7, cfg.distanceM+7]); ylim([cfg.dbFloor, 1]);
+
+subplot(3, 2, 6);
+plot(base.cir.distanceM-base.metrics.peakDistanceM, ...
+    base.cir.normalizedAmplitude, '--', 'Color', idealColor, ...
+    'LineWidth', 1.6); hold on;
+plot(bad.cir.distanceM-bad.metrics.peakDistanceM, ...
+    bad.cir.normalizedAmplitude, '-', 'Color', badColor, ...
+    'LineWidth', 1.7);
+plot([-4, 4], [1, 1]/sqrt(2), ':', 'Color', [0.55, 0.55, 0.55], ...
+    'HandleVisibility', 'off');
+grid on; xlim([-4, 4]); ylim([0, 1.08]);
+title(sprintf('峰位对齐后的功率半高宽：%.3f m -> %.3f m', ...
+    base.metrics.width3dBM, bad.metrics.width3dBM));
+xlabel('相对各自峰位的距离 / m'); ylabel('归一化幅度');
+legend({'理想', '相邻相位差二次'}, 'Location', 'best');
+
+annotation(fig, 'textbox', [0.02, 0.003, 0.96, 0.040], ...
+    'String', sprintf(['本例 Delta epsilon 峰峰值 %.3f rad，', ...
+    '对应额外群时延峰峰值 %.2f ns；宽度比 %.3f。', ...
+    '强畸变时可能出现肩峰或分裂，此时单个 -3 dB 宽度不再单调。'], ...
+    bad.metrics.adjacentPhaseDiffPpRad, ...
+    bad.metrics.extraGroupDelayPpNs, ...
+    bad.metrics.width3dBM/base.metrics.width3dBM), ...
     'EdgeColor', 'none', 'FontSize', 10, 'FontName', cfg.fontName, ...
     'Interpreter', 'none');
 end
